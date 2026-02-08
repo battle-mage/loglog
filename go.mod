@@ -1,3 +1,3 @@
-module github.com/you/reqlog
+module github.com/you/loglog
 
 go 1.21
