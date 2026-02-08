@@ -1,3 +1,4 @@
+// loglog/loglog.go
 package loglog
 
 import (
@@ -10,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -18,17 +20,24 @@ type UAQueueFn func(ua, ip string)
 // BlacklistFn returns true if path should be dropped.
 type BlacklistFn func(path string) bool
 
+// TimingThresholds color rules:
+//   - <= GreenMax  => green
+//   - <= YellowMax => yellow (and > GreenMax)
+//   - >  YellowMax => red
 type TimingThresholds struct {
-	// <= GreenMax => green
-	GreenMax time.Duration
-	// <= YellowMax => yellow (and > GreenMax)
+	GreenMax  time.Duration
 	YellowMax time.Duration
-	// > YellowMax => red
 }
 
 type Options struct {
+	// Blacklisting:
+	// If Blacklist is set, it is used (fast compiled matcher).
+	// Else if IsBlacklisted is set, it is used.
+	// Else the library uses its compiled default blacklist.
+	Blacklist     *Matcher
 	IsBlacklisted BlacklistFn
-	QueueUA       UAQueueFn
+
+	QueueUA UAQueueFn
 
 	// If true, attempts to "silently" drop blacklisted requests:
 	// 1) Hijack+Close when possible (HTTP/1.x)
@@ -36,14 +45,17 @@ type Options struct {
 	DropSilently bool
 
 	// If true, loopback clients are not logged/queued/blocked.
-	// (matches your original behavior)
 	SkipLoopback bool
 
-	// Colors
-	EnableColors  bool
-	ColorDropped  bool
-	TimingColors  bool
-	Thresholds    TimingThresholds
+	// Colors (ANSI):
+	EnableColors bool
+
+	// If true, include "DROPPED" in red for dropped connections (when EnableColors).
+	ColorDropped bool
+
+	// If true, colorize timing values based on Thresholds (when EnableColors).
+	TimingColors bool
+	Thresholds   TimingThresholds
 
 	// Logger (defaults to log.Default()).
 	Logger *log.Logger
@@ -73,10 +85,7 @@ func New(opts Options) func(http.Handler) http.Handler {
 			start := time.Now()
 
 			clientIP := remoteIP(r.RemoteAddr)
-			isLoopback := opts.SkipLoopback && isLoopbackIP(clientIP)
-
-			// If skipping loopback, just pass-through.
-			if isLoopback {
+			if opts.SkipLoopback && isLoopbackIP(clientIP) {
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -92,10 +101,18 @@ func New(opts Options) func(http.Handler) http.Handler {
 
 			ww := newTimingWriter(w)
 
-			// Drop if blacklisted
-			if opts.IsBlacklisted != nil && opts.IsBlacklisted(path) {
-				opts.Logger.Printf("%s %s %s | ref: %s | orig: %s | rHost: %s | UA: %s",
-					droppedPrefix(&opts),
+			blacklisted := false
+			if opts.Blacklist != nil {
+				blacklisted = opts.Blacklist.Match(path)
+			} else if opts.IsBlacklisted != nil {
+				blacklisted = opts.IsBlacklisted(path)
+			}
+
+			if blacklisted {
+				// Keep IP, add DROPPED token (optionally red).
+				opts.Logger.Printf("%s | %s | %s %s | ref: %s | orig: %s | rHost: %s | UA: %s",
+					r.RemoteAddr,
+					droppedWord(&opts),
 					r.Method,
 					path,
 					referer,
@@ -112,7 +129,7 @@ func New(opts Options) func(http.Handler) http.Handler {
 					panic(http.ErrAbortHandler)
 				}
 
-				// Non-silent fallback (if user disabled silent dropping)
+				// Non-silent fallback if DropSilently is false.
 				http.NotFound(ww, r)
 				return
 			}
@@ -144,34 +161,243 @@ func New(opts Options) func(http.Handler) http.Handler {
 	}
 }
 
-// NewChi is the same middleware signature as chi expects, provided as a separate entry point.
-func NewChi(opts Options) func(http.Handler) http.Handler {
-	return New(opts)
+// NewChi is identical signature for chi (r.Use(loglog.NewChi(...))).
+func NewChi(opts Options) func(http.Handler) http.Handler { return New(opts) }
+
+/* ---------------- Optimized blacklist matcher ---------------- */
+
+type Matcher struct {
+	prefix *prefixTrie
+	ac     *ahoCorasick
+}
+
+func NewMatcher(startsWith, contains []string) *Matcher {
+	return &Matcher{
+		prefix: newPrefixTrie(startsWith),
+		ac:     newAhoCorasick(contains),
+	}
+}
+
+func (m *Matcher) Match(path string) bool {
+	if m == nil {
+		return false
+	}
+	if m.prefix != nil && m.prefix.Match(path) {
+		return true
+	}
+	if m.ac != nil && m.ac.Match(path) {
+		return true
+	}
+	return false
+}
+
+var defaultStartsWith = []string{
+	"/admin",
+	"/login",
+	"/phpmyadmin",
+	"/config",
+	"/setup",
+	"/wp-admin",
+	"/cgi-bin",
+	"/sbin/init",
+	"/.env",
+}
+
+var defaultContains = []string{
+	".asp",
+	".rsp",
+	"eval-stdin.php",
+	"setup-config.php",
+	"app_dev.php",
+	"ssh-config",
+	"wp-login.php",
+	"xml-rpc",
+	"sslvpnlogin",
+	"formJsonAjaxReq",
+	"xmlrpc",
+	".git",
+	"developmentserver",
+	"wp-config",
+	"xmlrpc.php",
+	"bp.php",
+	"manager.php",
+	"file1.php",
+	"eval-stdin",
+}
+
+var (
+	defaultMatcherOnce sync.Once
+	defaultMatcher     *Matcher
+)
+
+func getDefaultMatcher() *Matcher {
+	defaultMatcherOnce.Do(func() {
+		defaultMatcher = NewMatcher(defaultStartsWith, defaultContains)
+	})
+	return defaultMatcher
+}
+
+/* ---------------- prefix trie (HasPrefix) ---------------- */
+
+type prefixTrie struct {
+	next map[byte]*prefixTrie
+	end  bool
+}
+
+func newPrefixTrie(prefixes []string) *prefixTrie {
+	if len(prefixes) == 0 {
+		return nil
+	}
+	root := &prefixTrie{next: make(map[byte]*prefixTrie)}
+	for _, p := range prefixes {
+		if p == "" {
+			continue
+		}
+		n := root
+		for i := 0; i < len(p); i++ {
+			b := p[i]
+			child := n.next[b]
+			if child == nil {
+				child = &prefixTrie{}
+				n.next[b] = child
+			}
+			if child.next == nil && i < len(p)-1 {
+				child.next = make(map[byte]*prefixTrie)
+			}
+			n = child
+		}
+		n.end = true
+	}
+	return root
+}
+
+func (t *prefixTrie) Match(s string) bool {
+	if t == nil {
+		return false
+	}
+	n := t
+	for i := 0; i < len(s); i++ {
+		if n.end {
+			return true
+		}
+		child := n.next[s[i]]
+		if child == nil {
+			return false
+		}
+		n = child
+	}
+	return n.end
+}
+
+/* ---------------- Aho–Corasick (Contains any) ---------------- */
+
+type acNode struct {
+	next map[byte]*acNode
+	fail *acNode
+	out  bool
+}
+
+type ahoCorasick struct {
+	root *acNode
+}
+
+func newAhoCorasick(patterns []string) *ahoCorasick {
+	if len(patterns) == 0 {
+		return nil
+	}
+	root := &acNode{next: make(map[byte]*acNode)}
+
+	// Build trie
+	for _, p := range patterns {
+		if p == "" {
+			continue
+		}
+		n := root
+		for i := 0; i < len(p); i++ {
+			b := p[i]
+			if n.next == nil {
+				n.next = make(map[byte]*acNode)
+			}
+			child := n.next[b]
+			if child == nil {
+				child = &acNode{}
+				n.next[b] = child
+			}
+			if child.next == nil && i < len(p)-1 {
+				child.next = make(map[byte]*acNode)
+			}
+			n = child
+		}
+		n.out = true
+	}
+
+	// Build failure links (BFS)
+	queue := make([]*acNode, 0, 64)
+	for _, child := range root.next {
+		child.fail = root
+		queue = append(queue, child)
+	}
+
+	for qi := 0; qi < len(queue); qi++ {
+		cur := queue[qi]
+		for b, nxt := range cur.next {
+			f := cur.fail
+			for f != nil && f != root && f.next[b] == nil {
+				f = f.fail
+			}
+			if f == nil || f.next[b] == nil {
+				nxt.fail = root
+			} else {
+				nxt.fail = f.next[b]
+			}
+			if nxt.fail != nil && nxt.fail.out {
+				nxt.out = true
+			}
+			queue = append(queue, nxt)
+		}
+	}
+
+	return &ahoCorasick{root: root}
+}
+
+func (a *ahoCorasick) Match(s string) bool {
+	if a == nil || a.root == nil {
+		return false
+	}
+	n := a.root
+	for i := 0; i < len(s); i++ {
+		b := s[i]
+		for n != a.root && n.next[b] == nil {
+			n = n.fail
+		}
+		if nxt := n.next[b]; nxt != nil {
+			n = nxt
+		}
+		if n.out {
+			return true
+		}
+	}
+	return false
 }
 
 /* ---------------- internals ---------------- */
 
 func applyDefaults(opts *Options) {
 	def := DefaultOptions()
+
 	if opts.Logger == nil {
 		opts.Logger = def.Logger
 	}
 	if opts.Thresholds.GreenMax == 0 && opts.Thresholds.YellowMax == 0 {
 		opts.Thresholds = def.Thresholds
 	}
-	// If user didn't set EnableColors explicitly, keep whatever they set.
-	// But if they left it false (zero value), that's a valid choice.
-	// So we only auto-enable colors if EnableColors is true already or default says terminal.
-	if !opts.EnableColors {
-		// leave as-is (explicit off)
-	} else {
-		// keep on
+	// If caller didn't set a blacklist function or matcher, use compiled default matcher.
+	if opts.Blacklist == nil && opts.IsBlacklisted == nil {
+		opts.Blacklist = getDefaultMatcher()
 	}
-	// If caller didn't fill any color flags but wants defaults, they should call DefaultOptions().
-	// To keep behavior predictable, do not force-enable individual flags here.
 }
 
-func droppedPrefix(opts *Options) string {
+func droppedWord(opts *Options) string {
 	word := "DROPPED"
 	if !opts.EnableColors || !opts.ColorDropped {
 		return word
@@ -180,8 +406,14 @@ func droppedPrefix(opts *Options) string {
 }
 
 func colorDuration(opts *Options, d time.Duration) string {
-	s := fmt.Sprintf("%dms", d.Milliseconds())
+	// Keep behavior: if no write happened, show -1ms uncolored.
+	ms := d.Milliseconds()
+	s := fmt.Sprintf("%dms", ms)
+
 	if !opts.EnableColors || !opts.TimingColors {
+		return s
+	}
+	if d < 0 {
 		return s
 	}
 
@@ -238,7 +470,7 @@ func (tw *timingWriter) Write(p []byte) (int, error) {
 	return n, err
 }
 
-// Support common optional interfaces so we don't break HTTP/2, websockets, etc.
+// Preserve optional interfaces.
 func (tw *timingWriter) Flush() {
 	if f, ok := tw.ResponseWriter.(http.Flusher); ok {
 		f.Flush()
@@ -258,7 +490,6 @@ func (tw *timingWriter) Push(target string, opts *http.PushOptions) error {
 	return http.ErrNotSupported
 }
 func (tw *timingWriter) ReadFrom(r io.Reader) (int64, error) {
-	// Optional optimization for io.Copy; keep timing consistent.
 	if rf, ok := tw.ResponseWriter.(io.ReaderFrom); ok {
 		if tw.firstWriteAt.IsZero() {
 			tw.firstWriteAt = time.Now()
@@ -294,8 +525,6 @@ func tryHijackClose(w http.ResponseWriter) bool {
 }
 
 func isTerminal(f *os.File) bool {
-	// Minimal check: if it's a char device, treat as terminal-ish.
-	// (Better detection can be added if you want; this avoids extra deps.)
 	fi, err := f.Stat()
 	if err != nil {
 		return false
