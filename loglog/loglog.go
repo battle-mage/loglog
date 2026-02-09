@@ -144,7 +144,7 @@ func New(opts Options) func(http.Handler) http.Handler {
 				status = http.StatusOK
 			}
 
-			opts.Logger.Printf("%s | %s | %s | UA: %s | ref: %s | orig: %s | rHost: %s | status: %d | bytes: %d | S: %s | C: %s",
+			opts.Logger.Printf("%s | %s | %s | UA: %s | ref: %s | orig: %s | rHost: %s | status: %d | bytes: %s | S: %s | C: %s",
 				r.RemoteAddr,
 				r.Method,
 				r.URL.String(),
@@ -153,7 +153,7 @@ func New(opts Options) func(http.Handler) http.Handler {
 				origin,
 				r.Host,
 				status,
-				ww.bytes,
+				formatBytes(ww.bytes),
 				colorDuration(&opts, ttfb),
 				colorDuration(&opts, total),
 			)
@@ -424,6 +424,23 @@ func colorDuration(opts *Options, d time.Duration) string {
 		return ansiYellow(s) + ansiReset()
 	}
 	return ansiRed(s) + ansiReset()
+}
+
+func formatBytes(n int64) string {
+	if n < 1000 {
+		return fmt.Sprintf("%d B", n)
+	}
+
+	units := []string{"kB", "MB", "GB", "TB", "PB", "EB"}
+	v := float64(n)
+	for i, unit := range units {
+		v /= 1000
+		if v < 1000 || i == len(units)-1 {
+			return fmt.Sprintf("%.1f %s", v, unit)
+		}
+	}
+
+	return fmt.Sprintf("%d B", n)
 }
 
 func remoteIP(remoteAddr string) string {
