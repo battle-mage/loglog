@@ -398,8 +398,12 @@ func (a *ahoCorasick) Match(s string) bool {
 func applyDefaults(opts *Options) {
 	def := DefaultOptions()
 
-	if opts.Logger == nil {
-		opts.Logger = buildConfiguredLogger(opts, def.Logger)
+	if opts.Logger == nil || opts.Logger == log.Default() {
+		fallback := def.Logger
+		if fallback == nil {
+			fallback = log.Default()
+		}
+		opts.Logger = buildConfiguredLogger(opts, fallback)
 	}
 	if opts.Thresholds.GreenMax == 0 && opts.Thresholds.YellowMax == 0 {
 		opts.Thresholds = def.Thresholds
