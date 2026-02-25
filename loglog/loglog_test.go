@@ -86,6 +86,35 @@ func TestBuildConfiguredLogger_ConfigOnlyFile(t *testing.T) {
 	}
 }
 
+
+func TestApplyDefaults_UsesConfiguredLoggerWhenDefaultLoggerProvided(t *testing.T) {
+	dir := t.TempDir()
+	oldWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	defer func() { _ = os.Chdir(oldWD) }()
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+
+	if err := os.WriteFile(configFileName, []byte("log_file=default.log\nlog_to_console=0\n"), 0o644); err != nil {
+		t.Fatalf("write cfg: %v", err)
+	}
+
+	opts := Options{Logger: log.Default()}
+	applyDefaults(&opts)
+	opts.Logger.Println("hello")
+
+	data, err := os.ReadFile(filepath.Join(dir, "default.log"))
+	if err != nil {
+		t.Fatalf("read default.log: %v", err)
+	}
+	if len(data) == 0 {
+		t.Fatal("expected default.log to contain output")
+	}
+}
+
 func TestBuildConfiguredLogger_OptionsOverrideConfig(t *testing.T) {
 	dir := t.TempDir()
 	oldWD, err := os.Getwd()
