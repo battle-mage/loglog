@@ -59,6 +59,19 @@ type Options struct {
 
 	// Logger (defaults to log.Default()).
 	Logger *log.Logger
+
+	// Logging destination settings (override loglog.cfg when set).
+	// LogFile:
+	//   - nil: use config file value.
+	//   - ptr to "": disable file logging.
+	//   - ptr to non-empty path: log to that file.
+	LogFile *string
+
+	// LogToConsole:
+	//   - nil: use config file value.
+	//   - ptr to false: disable console logging.
+	//   - ptr to true: enable console logging.
+	LogToConsole *bool
 }
 
 func DefaultOptions() Options {
@@ -386,7 +399,7 @@ func applyDefaults(opts *Options) {
 	def := DefaultOptions()
 
 	if opts.Logger == nil {
-		opts.Logger = def.Logger
+		opts.Logger = buildConfiguredLogger(opts, def.Logger)
 	}
 	if opts.Thresholds.GreenMax == 0 && opts.Thresholds.YellowMax == 0 {
 		opts.Thresholds = def.Thresholds
