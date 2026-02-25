@@ -22,6 +22,21 @@ ${\color{yellow}<= 1000ms}$
 ${\color{red}> 1000ms}$
 (configurable)
 
+
+## Config-based logger destinations
+If `loglog.cfg` exists in the process working directory, `loglog` reads these keys:
+
+- `log_file` (string): path to log file. If missing or empty, file logging is disabled.
+- `log_to_console` (`1`, `0`, or empty): whether to log to console (`1` enables, `0`/empty disables).
+
+Both destinations are independent and can be enabled together.
+
+You can override config values via `Options`:
+- `LogFile *string`
+- `LogToConsole *bool`
+
+When these option fields are provided (non-`nil`), they take priority over `loglog.cfg`.
+
 ## Request filtering (blocking)
 Supports basic request filtering for most commonly abused paths (.env /admin etc)
 
