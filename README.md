@@ -35,6 +35,8 @@ You can override config values via `Options`:
 - `LogFile *string`
 - `LogToConsole *bool`
 
+- `CompactTitles bool`: use compact field labels in log rows (`orig`→`o`, `rHost`→`h`, `bytes`→`b`, `ref`→`r`, `status`→`s`, `UA` unchanged) and omit the space after `:` (for example `s:200`).
+
 When these option fields are provided (non-`nil`), they take priority over `loglog.cfg`.
 
 ## Request filtering (blocking)

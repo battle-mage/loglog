@@ -72,6 +72,14 @@ type Options struct {
 	//   - ptr to false: disable console logging.
 	//   - ptr to true: enable console logging.
 	LogToConsole *bool
+
+	// If true, use compact log field labels and no whitespace after ':'.
+	//
+	// Standard labels:
+	//   UA, ref, orig, rHost, status, bytes
+	// Compact labels:
+	//   UA, r, o, h, s, b
+	CompactTitles bool
 }
 
 func DefaultOptions() Options {
@@ -123,15 +131,15 @@ func New(opts Options) func(http.Handler) http.Handler {
 
 			if blacklisted {
 				// Keep IP, add DROPPED token (optionally red).
-				opts.Logger.Printf("%s | %s | %s %s | ref: %s | orig: %s | rHost: %s | UA: %s",
+				opts.Logger.Printf("%s | %s | %s %s | %s | %s | %s | %s",
 					r.RemoteAddr,
 					droppedWord(&opts),
 					r.Method,
 					path,
-					referer,
-					origin,
-					r.Host,
-					ua,
+					fieldToken(&opts, "ref", referer),
+					fieldToken(&opts, "orig", origin),
+					fieldToken(&opts, "rHost", r.Host),
+					fieldToken(&opts, "UA", ua),
 				)
 
 				if opts.DropSilently && tryHijackClose(ww) {
@@ -157,16 +165,16 @@ func New(opts Options) func(http.Handler) http.Handler {
 				status = http.StatusOK
 			}
 
-			opts.Logger.Printf("%s | %s | %s | UA: %s | ref: %s | orig: %s | rHost: %s | status: %d | bytes: %s | S: %s | C: %s",
+			opts.Logger.Printf("%s | %s | %s | %s | %s | %s | %s | %s | %s | S: %s | C: %s",
 				r.RemoteAddr,
 				r.Method,
 				r.URL.String(),
-				ua,
-				referer,
-				origin,
-				r.Host,
-				status,
-				formatBytes(ww.bytes),
+				fieldToken(&opts, "UA", ua),
+				fieldToken(&opts, "ref", referer),
+				fieldToken(&opts, "orig", origin),
+				fieldToken(&opts, "rHost", r.Host),
+				fieldToken(&opts, "status", status),
+				fieldToken(&opts, "bytes", formatBytes(ww.bytes)),
 				colorDuration(&opts, ttfb),
 				colorDuration(&opts, total),
 			)
@@ -420,6 +428,29 @@ func droppedWord(opts *Options) string {
 		return word
 	}
 	return ansiRed(word) + ansiReset()
+}
+
+func fieldToken(opts *Options, label string, value any) string {
+	compact := opts != nil && opts.CompactTitles
+	prefix := label
+	if compact {
+		switch label {
+		case "orig":
+			prefix = "o"
+		case "rHost":
+			prefix = "h"
+		case "bytes":
+			prefix = "b"
+		case "ref":
+			prefix = "r"
+		case "status":
+			prefix = "s"
+		case "UA":
+			prefix = "UA"
+		}
+		return fmt.Sprintf("%s:%v", prefix, value)
+	}
+	return fmt.Sprintf("%s: %v", prefix, value)
 }
 
 func colorDuration(opts *Options, d time.Duration) string {
