@@ -86,7 +86,6 @@ func TestBuildConfiguredLogger_ConfigOnlyFile(t *testing.T) {
 	}
 }
 
-
 func TestApplyDefaults_UsesConfiguredLoggerWhenDefaultLoggerProvided(t *testing.T) {
 	dir := t.TempDir()
 	oldWD, err := os.Getwd()
@@ -140,4 +139,34 @@ func TestBuildConfiguredLogger_OptionsOverrideConfig(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dir, "cfg.log")); !os.IsNotExist(err) {
 		t.Fatalf("cfg.log should not be created, got err=%v", err)
 	}
+}
+
+func TestFieldToken(t *testing.T) {
+	t.Run("default titles keep space after colon", func(t *testing.T) {
+		if got := fieldToken(&Options{}, "orig", "https://example.com"); got != "orig: https://example.com" {
+			t.Fatalf("fieldToken default = %q", got)
+		}
+	})
+
+	t.Run("compact titles are shortened without space", func(t *testing.T) {
+		opts := &Options{CompactTitles: true}
+		tests := []struct {
+			label string
+			value any
+			want  string
+		}{
+			{label: "orig", value: "x", want: "o:x"},
+			{label: "rHost", value: "x", want: "h:x"},
+			{label: "bytes", value: "1.0 kB", want: "b:1.0 kB"},
+			{label: "ref", value: "x", want: "r:x"},
+			{label: "status", value: 200, want: "s:200"},
+			{label: "UA", value: "ua", want: "UA:ua"},
+		}
+
+		for _, tt := range tests {
+			if got := fieldToken(opts, tt.label, tt.value); got != tt.want {
+				t.Fatalf("fieldToken(%q) = %q, want %q", tt.label, got, tt.want)
+			}
+		}
+	})
 }
