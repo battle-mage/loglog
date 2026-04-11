@@ -54,6 +54,12 @@ Detection is UA-based and includes major classes of crawlers such as:
 - social preview fetchers (facebookexternalhit, Twitterbot, LinkedInBot, Slackbot, Discordbot, etc.)
 - AI crawlers (ClaudeBot, GPTBot, OAI-SearchBot, PerplexityBot, etc.)
 
+
+
+## Appending a custom suffix to each log row
+Downstream handlers can set a per-request suffix by calling `loglog.SetLogExtra(w, "...")`.
+If set, it is concatenated to that request's emitted log line exactly as given.
+
 ## Request filtering (blocking)
 Supports basic request filtering for most commonly abused paths (.env /admin etc)
 
