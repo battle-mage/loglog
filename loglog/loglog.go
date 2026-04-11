@@ -180,7 +180,7 @@ func New(opts Options) func(http.Handler) http.Handler {
 				status = http.StatusOK
 			}
 
-			opts.Logger.Printf("%s | %s | %s | %s | %s | %s | %s | %s | %s | S: %s | C: %s%s",
+			opts.Logger.Printf("%s | %s | %s | %s | %s | %s | %s | %s | %s | S: %s | C: %s%s%s",
 				r.RemoteAddr,
 				r.Method,
 				r.URL.String(),
@@ -193,6 +193,7 @@ func New(opts Options) func(http.Handler) http.Handler {
 				colorDuration(&opts, ttfb),
 				colorDuration(&opts, total),
 				botToken,
+				ww.logExtra,
 			)
 		})
 	}
@@ -200,6 +201,31 @@ func New(opts Options) func(http.Handler) http.Handler {
 
 // NewChi is identical signature for chi (r.Use(loglog.NewChi(...))).
 func NewChi(opts Options) func(http.Handler) http.Handler { return New(opts) }
+
+// SetLogExtra sets per-request extra text to be concatenated to the emitted log line.
+// Returns false if the provided writer is not using loglog middleware.
+func SetLogExtra(w http.ResponseWriter, extra string) bool {
+	tw := findTimingWriter(w)
+	if tw == nil {
+		return false
+	}
+	tw.logExtra = extra
+	return true
+}
+
+func findTimingWriter(w http.ResponseWriter) *timingWriter {
+	for w != nil {
+		if tw, ok := w.(*timingWriter); ok {
+			return tw
+		}
+		unwrapper, ok := w.(interface{ Unwrap() http.ResponseWriter })
+		if !ok {
+			return nil
+		}
+		w = unwrapper.Unwrap()
+	}
+	return nil
+}
 
 /* ---------------- Optimized blacklist matcher ---------------- */
 
@@ -534,6 +560,7 @@ type timingWriter struct {
 	status       int
 	bytes        int64
 	firstWriteAt time.Time
+	logExtra     string
 }
 
 func newTimingWriter(w http.ResponseWriter) *timingWriter {
@@ -593,6 +620,8 @@ func (tw *timingWriter) ReadFrom(r io.Reader) (int64, error) {
 	}
 	return io.Copy(tw.ResponseWriter, r)
 }
+
+func (tw *timingWriter) Unwrap() http.ResponseWriter { return tw.ResponseWriter }
 
 func (tw *timingWriter) timeToFirstWrite(start time.Time) time.Duration {
 	if tw.firstWriteAt.IsZero() {

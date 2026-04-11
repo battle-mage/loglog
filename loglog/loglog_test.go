@@ -252,3 +252,54 @@ func TestMiddleware_DoesNotAppendBotTagWhenDisabled(t *testing.T) {
 		t.Fatalf("did not expect bot tag in log row when disabled, got: %q", got)
 	}
 }
+
+func TestMiddleware_AppendsPerRequestExtraLogTokenWhenSet(t *testing.T) {
+	var buf bytes.Buffer
+	logger := log.New(&buf, "", 0)
+	opts := DefaultOptions()
+	opts.Logger = logger
+	opts.SkipLoopback = false
+
+	extra := " | reqid=abc123"
+	h := New(opts)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if ok := SetLogExtra(w, extra); !ok {
+			t.Fatal("expected SetLogExtra to succeed")
+		}
+		_, _ = w.Write([]byte("ok"))
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/test", nil)
+	req.RemoteAddr = "8.8.8.8:1234"
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if got := buf.String(); !strings.Contains(got, extra) {
+		t.Fatalf("expected extra token in log row, got: %q", got)
+	}
+}
+
+func TestMiddleware_UsesDifferentPerRequestExtraValues(t *testing.T) {
+	var buf bytes.Buffer
+	logger := log.New(&buf, "", 0)
+	opts := DefaultOptions()
+	opts.Logger = logger
+	opts.SkipLoopback = false
+
+	h := New(opts)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = SetLogExtra(w, " | reqid="+r.URL.Query().Get("rid"))
+		_, _ = w.Write([]byte("ok"))
+	}))
+
+	req1 := httptest.NewRequest(http.MethodGet, "http://example.com/test?rid=one", nil)
+	req1.RemoteAddr = "8.8.8.8:1111"
+	h.ServeHTTP(httptest.NewRecorder(), req1)
+
+	req2 := httptest.NewRequest(http.MethodGet, "http://example.com/test?rid=two", nil)
+	req2.RemoteAddr = "8.8.8.8:2222"
+	h.ServeHTTP(httptest.NewRecorder(), req2)
+
+	got := buf.String()
+	if !strings.Contains(got, "reqid=one") || !strings.Contains(got, "reqid=two") {
+		t.Fatalf("expected both per-request values in logs, got: %q", got)
+	}
+}
