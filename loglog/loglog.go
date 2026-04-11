@@ -80,6 +80,12 @@ type Options struct {
 	// Compact labels:
 	//   UA, r, o, h, s, b
 	CompactTitles bool
+
+	// Appended to log rows identified as bot traffic.
+	//   - nil: use config file value, or default @BOT@ when config missing.
+	//   - ptr to "": disable bot tagging.
+	//   - ptr to non-empty string: append exactly that value.
+	BotTag *string
 }
 
 func DefaultOptions() Options {
@@ -94,6 +100,7 @@ func DefaultOptions() Options {
 			YellowMax: 1000 * time.Millisecond,
 		},
 		Logger: log.Default(),
+		BotTag: strPtr("@BOT@"),
 	}
 }
 
@@ -115,6 +122,13 @@ func New(opts Options) func(http.Handler) http.Handler {
 			path := r.URL.Path
 			referer := r.Referer()
 			origin := r.Header.Get("Origin")
+			botToken := botLogToken(ua, opts.BotTag)
+			labels := standardFieldLabels
+			sep := ": "
+			if opts.CompactTitles {
+				labels = compactFieldLabels
+				sep = ":"
+			}
 
 			if opts.QueueUA != nil {
 				opts.QueueUA(ua, clientIP)
@@ -131,15 +145,16 @@ func New(opts Options) func(http.Handler) http.Handler {
 
 			if blacklisted {
 				// Keep IP, add DROPPED token (optionally red).
-				opts.Logger.Printf("%s | %s | %s %s | %s | %s | %s | %s",
+				opts.Logger.Printf("%s | %s | %s %s | %s | %s | %s | %s%s",
 					r.RemoteAddr,
 					droppedWord(&opts),
 					r.Method,
 					path,
-					fieldToken(&opts, "ref", referer),
-					fieldToken(&opts, "orig", origin),
-					fieldToken(&opts, "rHost", r.Host),
-					fieldToken(&opts, "UA", ua),
+					fmt.Sprintf("%s%s%v", labels[LabelRef], sep, referer),
+					fmt.Sprintf("%s%s%v", labels[LabelOrig], sep, origin),
+					fmt.Sprintf("%s%s%v", labels[LabelRHost], sep, r.Host),
+					fmt.Sprintf("%s%s%v", labels[LabelUA], sep, ua),
+					botToken,
 				)
 
 				if opts.DropSilently && tryHijackClose(ww) {
@@ -165,18 +180,19 @@ func New(opts Options) func(http.Handler) http.Handler {
 				status = http.StatusOK
 			}
 
-			opts.Logger.Printf("%s | %s | %s | %s | %s | %s | %s | %s | %s | S: %s | C: %s",
+			opts.Logger.Printf("%s | %s | %s | %s | %s | %s | %s | %s | %s | S: %s | C: %s%s",
 				r.RemoteAddr,
 				r.Method,
 				r.URL.String(),
-				fieldToken(&opts, "UA", ua),
-				fieldToken(&opts, "ref", referer),
-				fieldToken(&opts, "orig", origin),
-				fieldToken(&opts, "rHost", r.Host),
-				fieldToken(&opts, "status", status),
-				fieldToken(&opts, "bytes", formatBytes(ww.bytes)),
+				fmt.Sprintf("%s%s%v", labels[LabelUA], sep, ua),
+				fmt.Sprintf("%s%s%v", labels[LabelRef], sep, referer),
+				fmt.Sprintf("%s%s%v", labels[LabelOrig], sep, origin),
+				fmt.Sprintf("%s%s%v", labels[LabelRHost], sep, r.Host),
+				fmt.Sprintf("%s%s%v", labels[LabelStatus], sep, status),
+				fmt.Sprintf("%s%s%v", labels[LabelBytes], sep, formatBytes(ww.bytes)),
 				colorDuration(&opts, ttfb),
 				colorDuration(&opts, total),
+				botToken,
 			)
 		})
 	}
@@ -405,6 +421,7 @@ func (a *ahoCorasick) Match(s string) bool {
 
 func applyDefaults(opts *Options) {
 	def := DefaultOptions()
+	cfg := readLoggingConfig(configFileName)
 
 	if opts.Logger == nil || opts.Logger == log.Default() {
 		fallback := def.Logger
@@ -416,10 +433,29 @@ func applyDefaults(opts *Options) {
 	if opts.Thresholds.GreenMax == 0 && opts.Thresholds.YellowMax == 0 {
 		opts.Thresholds = def.Thresholds
 	}
+	if opts.BotTag == nil {
+		if cfg.botTag != nil {
+			opts.BotTag = cfg.botTag
+		} else {
+			opts.BotTag = def.BotTag
+		}
+	}
 	// If caller didn't set a blacklist function or matcher, use compiled default matcher.
 	if opts.Blacklist == nil && opts.IsBlacklisted == nil {
 		opts.Blacklist = getDefaultMatcher()
 	}
+}
+
+func strPtr(s string) *string { return &s }
+
+func botLogToken(ua string, botTag *string) string {
+	if botTag == nil || *botTag == "" {
+		return ""
+	}
+	if !isBotUserAgent(ua) {
+		return ""
+	}
+	return " | " + *botTag
 }
 
 func droppedWord(opts *Options) string {
@@ -430,28 +466,17 @@ func droppedWord(opts *Options) string {
 	return ansiRed(word) + ansiReset()
 }
 
-func fieldToken(opts *Options, label string, value any) string {
-	compact := opts != nil && opts.CompactTitles
-	prefix := label
-	if compact {
-		switch label {
-		case "orig":
-			prefix = "o"
-		case "rHost":
-			prefix = "h"
-		case "bytes":
-			prefix = "b"
-		case "ref":
-			prefix = "r"
-		case "status":
-			prefix = "s"
-		case "UA":
-			prefix = "UA"
-		}
-		return fmt.Sprintf("%s:%v", prefix, value)
-	}
-	return fmt.Sprintf("%s: %v", prefix, value)
-}
+const (
+	LabelOrig = iota
+	LabelRHost
+	LabelBytes
+	LabelRef
+	LabelStatus
+	LabelUA
+)
+
+var standardFieldLabels = []string{"orig", "rHost", "bytes", "ref", "status", "UA"}
+var compactFieldLabels = []string{"o", "h", "b", "r", "s", "UA"}
 
 func colorDuration(opts *Options, d time.Duration) string {
 	// Keep behavior: if no write happened, show -1ms uncolored.

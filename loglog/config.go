@@ -13,6 +13,7 @@ const configFileName = "loglog.cfg"
 type loggingConfig struct {
 	logFile      string
 	logToConsole *bool
+	botTag       *string
 }
 
 func buildConfiguredLogger(opts *Options, fallback *log.Logger) *log.Logger {
@@ -82,6 +83,9 @@ func readLoggingConfig(path string) loggingConfig {
 		case "log_to_console":
 			v := parseBoolValue(val)
 			cfg.logToConsole = &v
+		case "bot_tag":
+			v := val
+			cfg.botTag = &v
 		}
 	}
 
